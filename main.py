@@ -1,166 +1,80 @@
-# main.py - SkillTwin AI Semantic Matching Engine & Career Simulator
-from typing import List, Dict, Any
-import numpy as np
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
-from sentence_transformers import SentenceTransformer
+import streamlit as st
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# Initialize FastAPI application
-app = FastAPI(
-    title="SkillTwin AI Backend",
-    description="Semantic Vector Matching Engine and 'What-If' Career Simulator",
-    version="1.0.0",
+st.set_page_config(page_title="SkillTwin Job Finder", layout="wide")
+
+# Sample Job Database (Can be connected to MongoDB / PostgreSQL)
+JOB_DATABASE = [
+    {
+        "title": "Frontend Developer",
+        "company": "TechCorp",
+        "skills": "React JavaScript HTML CSS Redux TypeScript Tailwind",
+    },
+    {
+        "title": "Backend Developer",
+        "company": "DataWorks",
+        "skills": "Python Node.js Express PostgreSQL REST API Docker MongoDB",
+    },
+    {
+        "title": "Full Stack Engineer",
+        "company": "CloudInnovations",
+        "skills": "React Node.js Express MongoDB JavaScript TypeScript Docker AWS",
+    },
+    {
+        "title": "Data Scientist",
+        "company": "AI Insights",
+        "skills": "Python Pandas Machine Learning SQL Data Analysis Scikit-Learn NumPy",
+    },
+    {
+        "title": "DevOps Engineer",
+        "company": "Infrastructure Hub",
+        "skills": "Docker Kubernetes AWS CI/CD Linux Terraform Python Shell",
+    },
+]
+
+
+def calculate_matches(user_skills, jobs):
+    df_jobs = pd.DataFrame(jobs)
+
+    # Combine user skills and job skills into corpus
+    corpus = [user_skills] + df_jobs["skills"].tolist()
+
+    # TF-IDF Vectorizer
+    vectorizer = TfidfVectorizer()
+    tfidf_matrix = vectorizer.fit_transform(corpus)
+
+    # Compute Cosine Similarity between user vector (index 0) and all job vectors
+    similarity_scores = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
+
+    df_jobs["match_score"] = (similarity_scores * 100).round(2)
+    return df_jobs.sort_values(by="match_score", ascending=False)
+
+
+# App UI
+st.title("🎯 SkillTwin Job Finder")
+st.subheader("Match your transferable skill profile to open opportunities")
+
+user_skills_input = st.text_area(
+    "Enter your skills (separated by space or comma):",
+    placeholder="e.g. React JavaScript Node.js MongoDB CSS",
+    height=100,
 )
 
-# Load lightweight open-source embedding model for skill vectorization
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
+if st.button("Find Matching Jobs"):
+    if user_skills_input.strip():
+        results = calculate_matches(user_skills_input, JOB_DATABASE)
 
-
-# ------------------------------------------------------------------
-# Request & Response Schemas
-# ------------------------------------------------------------------
-class MatchRequest(BaseModel):
-    candidate_skills: List[str] = Field(
-        ..., example=["Python", "FastAPI", "REST APIs", "SQL"]
-    )
-    target_role_title: str = Field(..., example="Backend Developer")
-    target_role_skills: List[str] = Field(
-        ..., example=["Python", "FastAPI", "Docker", "PostgreSQL", "Microservices"]
-    )
-
-
-class SimulationRequest(BaseModel):
-    current_skills: List[str] = Field(
-        ..., example=["Python", "FastAPI", "REST APIs"]
-    )
-    target_role_skills: List[str] = Field(
-        ..., example=["Python", "FastAPI", "Docker", "Kubernetes", "AWS"]
-    )
-    hypothetical_new_skills: List[str] = Field(
-        ..., example=["Docker", "AWS Cloud Practitioner"]
-    )
-
-
-class MatchResponse(BaseModel):
-    match_score_percentage: float
-    semantic_overlap: Dict[str, Any]
-    missing_skills: List[str]
-
-
-class SimulationResponse(BaseModel):
-    baseline_score: float
-    simulated_score: float
-    score_delta: float
-    projected_match_percentage: float
-    newly_covered_requirements: List[str]
-
-
-# ------------------------------------------------------------------
-# Helper Functions (Semantic Vector Engine)
-# ------------------------------------------------------------------
-def get_text_embedding(text: str) -> np.ndarray:
-    """Generates a dense vector embedding for a given string."""
-    return embedder.encode(text, convert_to_numpy=True)
-
-
-def calculate_profile_similarity(
-    candidate_skills: List[str], role_skills: List[str]
-) -> float:
-    """Calculates semantic vector similarity between candidate skills and role requirements."""
-    if not candidate_skills or not role_skills:
-        return 0.0
-
-    candidate_str = ", ".join(candidate_skills)
-    role_str = ", ".join(role_skills)
-
-    c_vec = get_text_embedding(candidate_str).reshape(1, -1)
-    r_vec = get_text_embedding(role_str).reshape(1, -1)
-
-    similarity = cosine_similarity(c_vec, r_vec)[0][0]
-    return float(np.clip(similarity * 100, 0, 100))
-
-
-def extract_skill_gaps(
-    candidate_skills: List[str], role_skills: List[str], similarity_threshold: float = 0.65
-) -> List[str]:
-    """Identifies skills required by the role that lack semantic coverage in candidate profile."""
-    missing = []
-    if not candidate_skills:
-        return role_skills
-
-    cand_embeddings = embedder.encode(candidate_skills, convert_to_numpy=True)
-
-    for role_skill in role_skills:
-        r_emb = embedder.encode(role_skill, convert_to_numpy=True).reshape(1, -1)
-        sims = cosine_similarity(r_emb, cand_embeddings)[0]
-        max_sim = np.max(sims)
-
-        if max_sim < similarity_threshold:
-            missing.append(role_skill)
-
-    return missing
-
-
-# ------------------------------------------------------------------
-# API Endpoints
-# ------------------------------------------------------------------
-@app.get("/")
-def root():
-    return {"status": "online", "system": "SkillTwin AI Vector Engine"}
-
-
-@app.post("/api/v1/match", response_model=MatchResponse)
-def evaluate_match(payload: MatchRequest):
-    """Evaluates semantic match between candidate skills and a target role."""
-    score = calculate_profile_similarity(
-        payload.candidate_skills, payload.target_role_skills
-    )
-    gaps = extract_skill_gaps(payload.candidate_skills, payload.target_role_skills)
-
-    return MatchResponse(
-        match_score_percentage=round(score, 2),
-        semantic_overlap={
-            "matched_skills_count": len(payload.target_role_skills) - len(gaps),
-            "total_role_skills": len(payload.target_role_skills),
-        },
-        missing_skills=gaps,
-    )
-
-
-@app.post("/api/v1/simulate-what-if", response_model=SimulationResponse)
-def simulate_career_path(payload: SimulationRequest):
-    """Interactive Career 'What-If' Simulator: Measures match score gain upon upskilling."""
-    baseline = calculate_profile_similarity(
-        payload.current_skills, payload.target_role_skills
-    )
-
-    combined_skills = list(
-        set(payload.current_skills + payload.hypothetical_new_skills)
-    )
-    simulated = calculate_profile_similarity(
-        combined_skills, payload.target_role_skills
-    )
-
-    baseline_gaps = extract_skill_gaps(
-        payload.current_skills, payload.target_role_skills
-    )
-    simulated_gaps = extract_skill_gaps(
-        combined_skills, payload.target_role_skills
-    )
-
-    covered = [skill for skill in baseline_gaps if skill not in simulated_gaps]
-
-    return SimulationResponse(
-        baseline_score=round(baseline, 2),
-        simulated_score=round(simulated, 2),
-        score_delta=round(simulated - baseline, 2),
-        projected_match_percentage=round(simulated, 2),
-        newly_covered_requirements=covered,
-    )
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+        st.markdown("### Top SkillTwin Matches")
+        for idx, row in results.iterrows():
+            with st.container():
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.markdown(f"**{row['title']}** at *{row['company']}*")
+                    st.caption(f"Required Skills: {row['skills']}")
+                with col2:
+                    st.metric(label="Match Score", value=f"{row['match_score']}%")
+                st.divider()
+    else:
+        st.warning("Please enter at least one skill to search.")
